@@ -18,11 +18,25 @@ import torch.nn.functional as F
 import logging
 import os
 import json
+import sklearn
 
 from meta import MetaSGD
 from models import ResNet32, load_VNet, ModelCNNMnist
 import argparse
 import time
+
+def tamper_weights_reverse(state_dict):
+    # Reverse the sign of all weights
+    return {k: -v for k, v in state_dict.items()}
+
+def tamper_weights_large_neg(state_dict):
+    # Set all weights to -9999
+    return {k: torch.ones_like(v) * -9999 for k, v in state_dict.items()}
+
+def tamper_weights_random(state_dict):
+    # Replace weights with random noise
+    return {k: torch.randn_like(v) for k, v in state_dict.items()}
+
 
 
 def build_model(args_in):
@@ -36,19 +50,12 @@ def build_model(args_in):
 
 
 def accuracy(output, target, topk=(1,)):
-    """Computes the precision@k for the specified values of k"""
-    maxk = max(topk)
-    bs = target.size(0)
-
-    _, pred = output.topk(maxk, 1, True, True)
-    pred = pred.t()
-    correct = pred.eq(target.view(1, -1).expand_as(pred))
-
-    res = []
-    for k in topk:
-        correct_k = correct[:k].view(-1).float().sum(0)
-        res.append(correct_k.mul_(100.0 / bs))
-    return res
+    """Computes the accuracy using sklearn.metrics.accuracy_score"""
+    _, pred = torch.max(output, 1)
+    pred_np = pred.cpu().numpy()
+    target_np = target.cpu().numpy()
+    acc = sklearn.metrics.accuracy_score(target_np, pred_np) * 100.0
+    return [acc]
 
 
 def client_train(train_loader, model, epoch, client_index):
@@ -137,6 +144,8 @@ def server_train(client_loader, train_loader, model, vnet, epoch):
 def server_eval(train_loader, model, epoch):
     server_loss = 0
     server_acc = []
+    all_targets = []
+    all_preds = []
 
     model.eval()
     with torch.no_grad():
@@ -149,36 +158,35 @@ def server_eval(train_loader, model, epoch):
 
             server_loss += l_g_meta.item()
 
-            # # each class acc
+            # Collect predictions and targets for metrics
             _, predicted = torch.max(y_g_hat.data, 1)
+            all_preds.extend(predicted.cpu().numpy())
+            all_targets.extend(targets_val.cpu().numpy())
 
             if (batch_idx + 1) == len(train_loader):
+                acc = sum(server_acc) / len(server_acc)
+                precision = sklearn.metrics.precision_score(all_targets, all_preds, average="macro", zero_division=0)
+                recall = sklearn.metrics.recall_score(all_targets, all_preds, average="macro", zero_division=0)
+                f1 = sklearn.metrics.f1_score(all_targets, all_preds, average="macro", zero_division=0)
+
                 logger.info("eval")
                 logger.info(
                     f"Epoch: {epoch + 1}\t"
                     f"Server: 0\t"
                     f"Batch: {batch_idx + 1}\t"
                     f"Loss: %.4f\t"
-                    f"Prec@1 %.2f"
+                    f"Acc: %.2f\t"
+                    f"Prec: %.2f\t"
+                    f"Recall: %.2f\t"
+                    f"F1: %.2f"
                     % (
                         (server_loss / (batch_idx + 1)),
-                        sum(server_acc) / len(server_acc),
+                        acc,
+                        precision * 100,
+                        recall * 100,
+                        f1 * 100,
                     )
                 )
-
-                with open(
-                    f"./logs/{args.dataset_name}/{args.test_name}/{args.test_name}.txt",
-                    "a",
-                ) as f:
-                    f.write(
-                        f"{epoch + 1},"
-                        f"%.4f,"
-                        f"%.2f\n"
-                        % (
-                            (server_loss / (batch_idx + 1)),
-                            sum(server_acc) / len(server_acc),
-                        )
-                    )
 
 
 def meta_train():
@@ -278,9 +286,22 @@ def meta_train():
         # server
         for name, params in server_model.state_dict().items():
             weight_accumulator[name] = torch.zeros_like(params)
-        for j in client_select_list:
-            for name, params in client_model_list[j].state_dict().items():
-                weight_accumulator[name] += params
+        for idx, j in enumerate(client_select_list):
+            # Tamper weights if client is malicious
+            if args.corrupt_num > 0 and j < args.corrupt_num:
+                if args.weight_tampering == "reverse":
+                    tampered_state = tamper_weights_reverse(client_model_list[j].state_dict())
+                elif args.weight_tampering == "large_neg":
+                    tampered_state = tamper_weights_large_neg(client_model_list[j].state_dict())
+                elif args.weight_tampering == "random":
+                    tampered_state = tamper_weights_random(client_model_list[j].state_dict())
+                else:
+                    tampered_state = client_model_list[j].state_dict()
+                for name, params in tampered_state.items():
+                    weight_accumulator[name] += params
+            else:
+                for name, params in client_model_list[j].state_dict().items():
+                    weight_accumulator[name] += params
         for name in weight_accumulator.keys():
             weight_accumulator[name] = weight_accumulator[name] / client_select_num
         server_model.load_state_dict(weight_accumulator)
@@ -363,6 +384,7 @@ if __name__ == "__main__":
         choices=["random", "reverse", "zero"],
         help="corruption type",
     )
+    parser.add_argument("--weight_tampering", type=str, default="none", choices=["none", "reverse", "large_neg", "random"], help="weight tampering type")
     parser.add_argument(
         "--dataset_name",
         default="mnist",
@@ -421,7 +443,7 @@ if __name__ == "__main__":
     np.random.seed(args.seed)
 
     # logger
-    os.makedirs(f"./logs/{args.dataset_name}/{args.test_name}", exist_ok=True)
+    os.makedirs(f"./results/{args.dataset_name}/{args.test_name}", exist_ok=True)
     logger = logging.getLogger("test_logger")
     logger.setLevel(logging.DEBUG)
     test_log = logging.FileHandler(

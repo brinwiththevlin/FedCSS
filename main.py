@@ -1,3 +1,5 @@
+import csv
+
 import math
 
 import numpy as np
@@ -24,6 +26,17 @@ from meta import MetaSGD
 from models import ResNet32, load_VNet, ModelCNNMnist
 import argparse
 import time
+
+def init_results_csv(csv_path):
+    if not os.path.exists(csv_path):
+        with open(csv_path, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(["epoch", "loss", "accuracy", "precision", "recall", "f1"])
+
+def append_results_csv(csv_path, epoch, loss, accuracy, precision, recall, f1):
+    with open(csv_path, "a", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow([epoch, loss, accuracy, precision, recall, f1])
 
 def tamper_weights_reverse(state_dict):
     # Reverse the sign of all weights
@@ -186,6 +199,16 @@ def server_eval(train_loader, model, epoch):
                         recall * 100,
                         f1 * 100,
                     )
+                )
+                # Store results to CSV
+                append_results_csv(
+                    results_csv_path,
+                    epoch + 1,
+                    round(server_loss / (batch_idx + 1), 4),
+                    round(acc, 2),
+                    round(precision * 100, 2),
+                    round(recall * 100, 2),
+                    round(f1 * 100, 2),
                 )
 
 
@@ -381,7 +404,7 @@ if __name__ == "__main__":
         "--corruption_type",
         default="random",
         type=str,
-        choices=["random", "reverse", "zero"],
+        choices=["random", "reverse", "zero", "none"],
         help="corruption type",
     )
     parser.add_argument("--weight_tampering", type=str, default="none", choices=["none", "reverse", "large_neg", "random"], help="weight tampering type")
@@ -443,7 +466,7 @@ if __name__ == "__main__":
     np.random.seed(args.seed)
 
     # logger
-    os.makedirs(f"./results/{args.dataset_name}/{args.test_name}", exist_ok=True)
+    os.makedirs(f"./logs/{args.dataset_name}/{args.test_name}", exist_ok=True)
     logger = logging.getLogger("test_logger")
     logger.setLevel(logging.DEBUG)
     test_log = logging.FileHandler(
@@ -464,6 +487,10 @@ if __name__ == "__main__":
 
     # log config
     logging_config()
+
+    # ./results/noniid/mnist_25_cnn_0_ltnone_wtlarge_neg
+    results_csv_path = f"./results/{args.dataset_name}_{args.client_num}_{1 if args.noniid_ratio == -1 else 0}_lt{args.corruption_type}_wt{args.weight_tampering}.csv"
+    init_results_csv(results_csv_path)
 
     # weight dict of meta
     weight_dict = {}

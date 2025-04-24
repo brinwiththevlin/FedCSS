@@ -282,7 +282,7 @@ def load_corrupt_client_data(
 
     targets_true = copy.deepcopy(data_train.targets)
 
-    if corruption_type is not None:
+    if corruption_type is not None and corruption_type != "none":
         corruption_matrix = corruption_list[corruption_type](
             corruption_ratio, num_classes
         )
@@ -452,7 +452,7 @@ def mnist_non_iid(
 
     # Apply label corruption
     targets_true = copy.deepcopy(labels)  # Use the numpy array 'labels'
-    if corruption_type is not None:
+    if corruption_type is not None and corruption_type != "none":
         corruption_matrix = corruption_list[corruption_type](
             corruption_ratio, num_classes
         )
@@ -570,7 +570,7 @@ def load_non_iid_data(
         np.random.shuffle(client_train_index[client_idx])
 
     targets_true = copy.deepcopy(data_train.targets)
-    if corruption_type is not None:
+    if corruption_type is not None and corruption_type != "none":
         corruption_matrix = corruption_list[corruption_type](
             corruption_ratio, num_classes
         )
@@ -675,7 +675,7 @@ def load_non_iid_class_data(
         np.random.shuffle(client_train_index[client_idx])
 
     targets_true = copy.deepcopy(data_train.targets)
-    if corruption_type is not None:
+    if corruption_type is not None and corruption_type != "none":
         corruption_matrix = corruption_list[corruption_type](
             corruption_ratio, num_classes
         )
